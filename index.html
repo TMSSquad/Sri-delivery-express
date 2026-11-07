@@ -1,0 +1,648 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Lock,
+  Plus,
+  Send,
+  Users,
+  Copy,
+  Check,
+  Smartphone,
+  Monitor,
+  CheckCheck,
+  Smile,
+  Paperclip,
+  MoreVertical,
+  Search,
+  Phone,
+  Video,
+  LogOut,
+  X,
+  Share2
+} from "lucide-react";
+
+// --- RANDOM CODE GENERATOR (Free Fire / Squad style: SF-XXXX) ---
+const generateSquadCode = () => {
+  const num = Math.floor(1000 + Math.random() * 9000);
+  return `SF-${num}`;
+};
+
+export default function App() {
+  // --- STATE ---
+  const [currentUser, setCurrentUser] = useState(() => {
+    return localStorage.getItem("chat_username") || "";
+  });
+  const [roomCode, setRoomCode] = useState(() => {
+    return localStorage.getItem("chat_active_room") || "";
+  });
+  const [myDeviceCode] = useState(() => generateSquadCode());
+  const [inputCode, setInputCode] = useState("");
+  const [inputName, setInputName] = useState(currentUser || "");
+  const [isConnected, setIsConnected] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [inputMessage, setInputMessage] = useState("");
+  const [members, setMembers] = useState([]);
+  const [isPlusModalOpen, setIsPlusModalOpen] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState("chat"); // for mobile drawer: 'chat' | 'members'
+
+  const messagesEndRef = useRef(null);
+  const broadcastRef = useRef(null);
+
+  // --- AUTO SCROLL ---
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // --- CROSS-DEVICE & CROSS-TAB REALTIME SYNC ENGINE ---
+  // Uses BroadcastChannel + Storage events to enable instant local sync across tabs/windows,
+  // with an architectural layout ready for Firebase Realtime Database.
+  useEffect(() => {
+    const channel = new BroadcastChannel("squad_chat_network");
+    broadcastRef.current = channel;
+
+    channel.onmessage = (event) => {
+      const { type, payload } = event.data;
+
+      if (type === "SYNC_MESSAGE" && payload.roomCode === roomCode) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === payload.message.id)) return prev;
+          return [...prev, payload.message];
+        });
+      }
+
+      if (type === "NEW_MEMBER" && payload.roomCode === roomCode) {
+        setMembers((prev) => {
+          if (!prev.includes(payload.user)) {
+            return [...prev, payload.user];
+          }
+          return prev;
+        });
+      }
+    };
+
+    // Cross-tab fallback via Window Storage Events
+    const handleStorage = (e) => {
+      if (e.key === `room_messages_${roomCode}`) {
+        try {
+          const updated = JSON.parse(e.newValue || "[]");
+          setMessages(updated);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (e.key === `room_members_${roomCode}`) {
+        try {
+          const updatedMembers = JSON.parse(e.newValue || "[]");
+          setMembers(updatedMembers);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      channel.close();
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [roomCode]);
+
+  // Load existing room state when connected
+  const connectToRoom = (targetRoom, username) => {
+    if (!targetRoom || !username) return;
+
+    const formattedRoom = targetRoom.toUpperCase().trim();
+    setRoomCode(formattedRoom);
+    setCurrentUser(username);
+    setIsConnected(true);
+
+    localStorage.setItem("chat_active_room", formattedRoom);
+    localStorage.setItem("chat_username", username);
+
+    // Fetch existing room data from storage
+    const storedMessages = JSON.parse(
+      localStorage.getItem(`room_messages_${formattedRoom}`) || "[]"
+    );
+    const storedMembers = JSON.parse(
+      localStorage.getItem(`room_members_${formattedRoom}`) || "[]"
+    );
+
+    let newMembersList = storedMembers;
+    if (!storedMembers.includes(username)) {
+      newMembersList = [...storedMembers, username];
+      localStorage.setItem(
+        `room_members_${formattedRoom}`,
+        JSON.stringify(newMembersList)
+      );
+    }
+    setMembers(newMembersList);
+
+    // Initial system greeting if new room
+    let initialMsgs = storedMessages;
+    if (storedMessages.length === 0) {
+      initialMsgs = [
+        {
+          id: "sys-init",
+          sender: "System",
+          text: `Secure squad room ${formattedRoom} initialized. Share the code to connect other devices.`,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit"
+          }),
+          isSystem: true
+        }
+      ];
+      localStorage.setItem(
+        `room_messages_${formattedRoom}`,
+        JSON.stringify(initialMsgs)
+      );
+    }
+    setMessages(initialMsgs);
+
+    // Notify other windows/devices
+    broadcastRef.current?.postMessage({
+      type: "NEW_MEMBER",
+      payload: { roomCode: formattedRoom, user: username }
+    });
+  };
+
+  // --- SEND MESSAGE ---
+  const handleSendMessage = (e) => {
+    e?.preventDefault();
+    if (!inputMessage.trim() || !isConnected) return;
+
+    const newMsg = {
+      id: Date.now().toString(),
+      sender: currentUser,
+      text: inputMessage.trim(),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit"
+      }),
+      isMine: true
+    };
+
+    const updated = [...messages, newMsg];
+    setMessages(updated);
+    localStorage.setItem(
+      `room_messages_${roomCode}`,
+      JSON.stringify(updated)
+    );
+
+    // Broadcast in real-time
+    broadcastRef.current?.postMessage({
+      type: "SYNC_MESSAGE",
+      payload: {
+        roomCode,
+        message: { ...newMsg, isMine: false }
+      }
+    });
+
+    setInputMessage("");
+  };
+
+  // --- COPY CODE HELPER ---
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
+  };
+
+  const handleDisconnect = () => {
+    setIsConnected(false);
+    setRoomCode("");
+    localStorage.removeItem("chat_active_room");
+  };
+
+  // -------------------------------------------------------------------------
+  // 1. POPUP CONNECTION SCREEN (Shown when not connected)
+  // -------------------------------------------------------------------------
+  if (!isConnected) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden font-sans">
+        {/* Background Decorative Rings */}
+        <div className="absolute w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-3xl -top-20 -left-20 pointer-events-none" />
+        <div className="absolute w-[450px] h-[450px] bg-emerald-600/10 rounded-full blur-3xl -bottom-20 -right-20 pointer-events-none" />
+
+        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 sm:p-8 text-center border border-slate-100 z-10 animate-in fade-in zoom-in-95 duration-200">
+          {/* Header & Lock Icon */}
+          <div className="flex items-center justify-center gap-2 mb-2 text-slate-800">
+            <Lock className="w-5 h-5 text-blue-600" />
+            <h2 className="text-xl font-bold tracking-tight">
+              Secure Connection Setup
+            </h2>
+          </div>
+          <p className="text-xs text-slate-500 mb-6">
+            Instant multi-device squad synchronization
+          </p>
+
+          {/* Generated Code Display */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-6 shadow-inner relative group">
+            <span className="text-xs uppercase tracking-wider font-semibold text-slate-400 block mb-1">
+              Your Device Squad Code
+            </span>
+            <div className="text-4xl sm:text-5xl font-black text-blue-600 tracking-wider font-mono">
+              {myDeviceCode}
+            </div>
+            <button
+              onClick={() => copyToClipboard(myDeviceCode)}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-blue-600 transition"
+            >
+              {isCopied ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-green-600" /> Copied to
+                  clipboard
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" /> Tap to copy code
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Inputs Section */}
+          <div className="space-y-4 text-left">
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1 ml-1">
+                Your Display Name
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Sriram, Malathi, David"
+                value={inputName}
+                onChange={(e) => setInputName(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:outline-none text-slate-800 text-sm font-medium transition"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1 ml-1">
+                Enter Group Code from Another Phone / PC
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="SF-XXXX (or leave blank to host this code)"
+                  value={inputCode}
+                  onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:outline-none text-slate-800 text-sm font-mono font-bold tracking-wider transition"
+                />
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="pt-2 flex flex-col gap-2.5">
+              <button
+                onClick={() => {
+                  if (!inputName.trim()) {
+                    alert("Please enter your name first!");
+                    return;
+                  }
+                  const codeToJoin = inputCode.trim() || myDeviceCode;
+                  connectToRoom(codeToJoin, inputName.trim());
+                }}
+                className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] transition text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 text-center flex items-center justify-center gap-2"
+              >
+                <span>{inputCode ? "Connect to Squad" : "Start Room as Host"}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center gap-4 text-slate-400 text-xs">
+            <span className="flex items-center gap-1">
+              <Smartphone className="w-3.5 h-3.5" /> Mobile
+            </span>
+            <span>•</span>
+            <span className="flex items-center gap-1">
+              <Monitor className="w-3.5 h-3.5" /> Desktop
+            </span>
+            <span>•</span>
+            <span className="text-emerald-600 font-medium">Auto P2P Sync</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 2. MAIN CHAT APPLICATION (WhatsApp Web inspired layout)
+  // -------------------------------------------------------------------------
+  return (
+    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
+      {/* Top Navbar */}
+      <div className="h-16 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between z-20">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white shadow-md">
+            {roomCode.slice(0, 2)}
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-slate-100 text-base leading-tight">
+                Project Alpha
+              </h1>
+              <span className="bg-blue-900/60 text-blue-400 border border-blue-700/50 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full">
+                {roomCode}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 flex items-center gap-1">
+              <span>{members.length || 1} members connected</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block animate-pulse ml-1" />
+            </p>
+          </div>
+        </div>
+
+        {/* Right Action Icons */}
+        <div className="flex items-center gap-1 sm:gap-3 text-slate-400">
+          <button
+            onClick={() => setIsPlusModalOpen(true)}
+            className="hidden sm:flex items-center gap-1.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 px-3 py-1.5 rounded-lg text-xs font-semibold border border-blue-500/30 transition"
+          >
+            <Share2 className="w-3.5 h-3.5" /> Invite Device
+          </button>
+          <button className="p-2 hover:bg-slate-800 rounded-full transition">
+            <Search className="w-4 h-4" />
+          </button>
+          <button className="p-2 hover:bg-slate-800 rounded-full transition">
+            <Phone className="w-4 h-4" />
+          </button>
+          <button className="p-2 hover:bg-slate-800 rounded-full transition">
+            <Video className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleDisconnect}
+            title="Leave / Disconnect"
+            className="p-2 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-full transition"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* SIDEBAR: Active Squad Members (WhatsApp Web style desktop view) */}
+        <div className="hidden md:flex w-80 bg-slate-900 border-r border-slate-800 flex-col">
+          <div className="p-4 border-b border-slate-800">
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <span>Squad Connected Devices</span>
+              <span className="text-blue-400 font-mono font-bold">
+                {members.length}
+              </span>
+            </div>
+            <div className="text-xs bg-slate-800/80 p-2.5 rounded-xl border border-slate-700/50 flex items-center justify-between">
+              <span className="text-slate-300 font-medium">Squad Code:</span>
+              <span className="font-mono font-bold text-blue-400">
+                {roomCode}
+              </span>
+              <button
+                onClick={() => copyToClipboard(roomCode)}
+                className="text-slate-400 hover:text-white"
+              >
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Members List */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-1">
+            {members.map((member, idx) => (
+              <div
+                key={idx}
+                className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-800/60 transition group"
+              >
+                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-slate-700 to-slate-600 flex items-center justify-center font-bold text-xs text-white uppercase border border-slate-600">
+                  {member.slice(0, 2)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-slate-200 truncate">
+                      {member}
+                    </p>
+                    {member === currentUser && (
+                      <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded font-bold">
+                        You
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                    Connected
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* CHAT THREAD PANEL */}
+        <div className="flex-1 flex flex-col bg-[#0b141a] relative">
+          {/* Subtle WhatsApp-style wallpaper grid overlay */}
+          <div
+            className="absolute inset-0 opacity-[0.03] pointer-events-none"
+            style={{
+              backgroundImage:
+                "radial-gradient(#ffffff 1px, transparent 1px)",
+              backgroundSize: "20px 20px"
+            }}
+          />
+
+          {/* Messages Scroll Area */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3 z-10">
+            {/* Timestamp Badge */}
+            <div className="flex justify-center my-2">
+              <span className="bg-slate-800/80 backdrop-blur text-slate-400 text-[11px] font-medium px-3 py-1 rounded-lg border border-slate-700/40">
+                Today
+              </span>
+            </div>
+
+            {messages.map((msg) => {
+              if (msg.isSystem) {
+                return (
+                  <div key={msg.id} className="flex justify-center my-3">
+                    <div className="bg-slate-800/90 border border-slate-700 text-slate-300 text-xs px-4 py-1.5 rounded-full text-center max-w-sm shadow-sm flex items-center gap-2">
+                      <Lock className="w-3 h-3 text-blue-400 shrink-0" />
+                      <span>{msg.text}</span>
+                    </div>
+                  </div>
+                );
+              }
+
+              const isMe = msg.sender === currentUser;
+
+              return (
+                <div
+                  key={msg.id}
+                  className={`flex items-end gap-2 ${
+                    isMe ? "justify-end" : "justify-start"
+                  }`}
+                >
+                  {/* Avatar for other people */}
+                  {!isMe && (
+                    <div className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-300 border border-slate-600 shrink-0 mb-1">
+                      {msg.sender.slice(0, 2).toUpperCase()}
+                    </div>
+                  )}
+
+                  <div
+                    className={`max-w-[80%] sm:max-w-md rounded-2xl px-4 py-2.5 shadow-md relative text-sm ${
+                      isMe
+                        ? "bg-[#005c4b] text-white rounded-br-xs"
+                        : "bg-[#202c33] text-slate-200 rounded-bl-xs"
+                    }`}
+                  >
+                    {!isMe && (
+                      <p className="text-[11px] font-bold text-emerald-400 mb-0.5">
+                        {msg.sender}
+                      </p>
+                    )}
+
+                    <p className="leading-relaxed break-words">{msg.text}</p>
+
+                    <div className="flex items-center justify-end gap-1 mt-1 text-[10px] text-slate-300/80">
+                      <span>{msg.timestamp}</span>
+                      {isMe && <CheckCheck className="w-3.5 h-3.5 text-blue-400" />}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* FLOATING ACTION PLUS (+) BUTTON (Exact placement as mockup) */}
+          <button
+            onClick={() => setIsPlusModalOpen(true)}
+            aria-label="Add Device or Squad Member"
+            className="absolute bottom-20 right-6 sm:bottom-24 sm:right-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-500 active:scale-95 text-white shadow-xl shadow-blue-600/40 flex items-center justify-center transition-all z-20 group"
+          >
+            <Plus className="w-7 h-7 stroke-[2.5] group-hover:rotate-90 transition-transform duration-200" />
+          </button>
+
+          {/* Chat Input Bar */}
+          <form
+            onSubmit={handleSendMessage}
+            className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2 z-10"
+          >
+            <button
+              type="button"
+              className="p-2 text-slate-400 hover:text-slate-200 transition hidden sm:block"
+            >
+              <Smile className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              className="p-2 text-slate-400 hover:text-slate-200 transition hidden sm:block"
+            >
+              <Paperclip className="w-5 h-5" />
+            </button>
+
+            <input
+              type="text"
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              placeholder="Type a message..."
+              className="flex-1 bg-slate-800 border border-slate-700 focus:border-blue-500 text-slate-200 text-sm rounded-xl px-4 py-3 focus:outline-none transition"
+            />
+
+            <button
+              type="submit"
+              disabled={!inputMessage.trim()}
+              className="p-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-white rounded-xl shadow-md transition"
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* -------------------------------------------------------------------------
+          3. PLUS (+) BUTTON MODAL: ADD / CONNECT ANOTHER DEVICE
+         ------------------------------------------------------------------------- */}
+      {isPlusModalOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl w-full max-w-sm p-6 text-center text-slate-800 shadow-2xl relative animate-in zoom-in-95">
+            <button
+              onClick={() => setIsPlusModalOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-100"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <Lock className="w-4 h-4 text-blue-600" />
+              <h3 className="font-bold text-lg text-slate-900">
+                Squad Connection Code
+              </h3>
+            </div>
+            <p className="text-xs text-slate-500 mb-5">
+              Enter this code on your other phone or tablet to join this chat.
+            </p>
+
+            {/* Big Active Code */}
+            <div className="bg-blue-50/70 border border-blue-200 rounded-2xl py-4 px-2 mb-4">
+              <div className="text-4xl font-black text-blue-600 font-mono tracking-widest">
+                {roomCode}
+              </div>
+            </div>
+
+            <button
+              onClick={() => copyToClipboard(roomCode)}
+              className="w-full py-2.5 mb-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center justify-center gap-2 transition"
+            >
+              {isCopied ? (
+                <>
+                  <Check className="w-4 h-4 text-green-600" /> Code Copied!
+                </>
+              ) : (
+                <>
+                  <Copy className="w-4 h-4" /> Copy Code
+                </>
+              )}
+            </button>
+
+            <div className="relative my-4">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-200" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-white px-2 text-slate-400 font-semibold">
+                  Or switch to another squad
+                </span>
+              </div>
+            </div>
+
+            {/* Input to switch room right from the modal */}
+            <div className="space-y-3">
+              <input
+                type="text"
+                placeholder="Enter new 6-digit code..."
+                value={inputCode}
+                onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-center font-mono font-bold tracking-wider text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+              <button
+                onClick={() => {
+                  if (inputCode.trim()) {
+                    connectToRoom(inputCode.trim(), currentUser);
+                    setIsPlusModalOpen(false);
+                    setInputCode("");
+                  }
+                }}
+                disabled={!inputCode.trim()}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-xl font-semibold text-sm transition"
+              >
+                Switch Room
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
